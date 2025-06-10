@@ -139,7 +139,6 @@ def export_to_excel(batch_mode):
 
         with pd.ExcelWriter("batch_summary.xlsx", engine='openpyxl') as writer:
             df_summary.to_excel(writer, sheet_name="Summary", index=False, float_format="%.3f")
-            df_path_lengths.to_excel(writer, sheet_name="PathLengths", index=False, float_format="%.3f")
         print("Batch summary exported to batch_summary.xlsx")
 
         wb = openpyxl.load_workbook(output_filename_summary := "batch_summary.xlsx")
@@ -174,6 +173,7 @@ def export_to_excel(batch_mode):
             ang = [a for f, a in angles if f == fname][0]
             res = [r for f, r in resultant_vectors if f == fname][0]
             eucl = [e for f, e in euclidean_distances if f == fname][0]
+            path = [p for f, p in path_lengths if f == fname][0]
 
             # Find all magnitudes for this file
             all_mags = compute_magnitude(vec)
@@ -182,6 +182,7 @@ def export_to_excel(batch_mode):
             df_angles = pd.DataFrame({'file': fname, 'angle': ang})
             df_resultant = pd.DataFrame([{'file': fname, 'resultant_x': res[0], 'resultant_y': res[1]}])
             df_avg_mag = pd.DataFrame({'file': [fname], 'average_magnitude': [mag]})
+            df_path = pd.DataFrame({'file': [fname], 'total_path_length': [path]})
             df_eucl = pd.DataFrame({'file': fname, 'euclidean_distance': eucl})
 
             output_filename = f"{os.path.splitext(fname)[0]}_results.xlsx"
@@ -192,6 +193,7 @@ def export_to_excel(batch_mode):
                 df_angles.to_excel(writer, sheet_name="Angles", index=False, float_format="%.3f")
                 df_vectors.to_excel(writer, sheet_name="Vectors", index=False, float_format="%.3f")
                 df_magnitudes.to_excel(writer, sheet_name="Magnitudes", index=False, float_format="%.3f")
+                df_path.to_excel(writer, sheet_name="PathLengths", index=False, float_format="%.3f")
 
             # Auto-fit columns for all sheets
             wb = openpyxl.load_workbook(output_filename)
