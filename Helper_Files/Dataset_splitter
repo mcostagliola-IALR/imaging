@@ -22,6 +22,6 @@ def split_dataset(source_direc, dest_direc, split_ratios=(0.7,0.15,0.15) ):
             split_path.mkdir(parents=True, exist_ok=True)
             for img_path in split_images:
                 shutil.copy(img_path, split_path / img_path.name)
-source =r"E:\Plant_Dataset"
-dest =r"C:\Users\dbrimmer\Downloads\plant_dataset_split"
+source =r"E:\Mega_Dataset"
+dest =r"C:\Users\dbrimmer\Downloads\plant_dataset_split_v2"
 split_dataset(source, dest)
