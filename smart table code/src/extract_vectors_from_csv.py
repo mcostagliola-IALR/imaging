@@ -4,10 +4,16 @@ import customtkinter as ctk
 import os
 from natsort import natsorted
 import openpyxl
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import string
 
 def compute_vectors(csv_path):
     df = pd.read_csv(csv_path, header=None)
-    points = df.to_numpy()
+    # Use only the first two columns for x, y
+    points = df.iloc[:, :2].to_numpy()
+    datetimes = df.iloc[:, 2] if df.shape[1] > 2 else None
+    reps = df.iloc[:, 3] if df.shape[1] > 3 else None
     vectors = []
     for i in range(len(points) - 1):
         x_i, y_i = points[i]
@@ -15,7 +21,7 @@ def compute_vectors(csv_path):
         dx = x_next - x_i
         dy = y_next - y_i
         vectors.append([x_i, y_i, dx, dy])
-    return np.array(vectors)
+    return np.array(vectors), points, datetimes, reps
 
 def compute_resultant_vector(vectors):
     resultant_x = np.sum(vectors[:, 2])
@@ -26,7 +32,9 @@ def compute_magnitude(vectors):
     return np.sqrt(vectors[:, 2]**2 + vectors[:, 3]**2)
 
 def compute_angle(vectors):
-    return np.rad2deg(np.arctan2(vectors[:, 3], vectors[:, 2]))
+    # Normalize angle range to [0, 360)
+    # atan2 returns angle in radians, convert to degrees and normalize
+    return (np.rad2deg(np.arctan2(vectors[:, 3], vectors[:, 2]))+360)%360
 
 def get_batch_mode():
     app = ctk.CTk()
@@ -58,7 +66,7 @@ def batch_process(csv_files):
     vectors = []
 
     for csv_file in natsorted(csv_files):
-        vector = compute_vectors(csv_file)
+        vector, points, datetimes, reps = compute_vectors(csv_file)
         euclidean_distance = np.linalg.norm(vector[:, 2:4], axis=1)
         magnitudes = compute_magnitude(vector)
         angle = compute_angle(vector)
@@ -92,14 +100,14 @@ def single_process(csv_path):
     if not csv_path:
         print("No file selected.")
         return
-    vectors = compute_vectors(csv_path)
+    vectors, points, datetimes, reps = compute_vectors(csv_path)
     magnitudes = compute_magnitude(vectors)
     angles = compute_angle(vectors)
     resultant = compute_resultant_vector(vectors)
     average_magnitude = np.mean(magnitudes)
     euclidean_distance = np.linalg.norm(vectors[:, 2:4], axis=1)
     path_length = np.sum(euclidean_distance)
-    file_name = os.path.basename(csv_path)
+    file_name = datetimes
 
     return (
         (file_name, vectors),
@@ -129,8 +137,8 @@ def export_to_excel(batch_mode):
 
         # Batch summary file
         summary_data = {
-            'mean_resultant_x': [mean_resultant[0]],
-            'mean_resultant_y': [mean_resultant[1]],
+            'mean_resultant_dx': [mean_resultant[0]],
+            'mean_resultant_dy': [mean_resultant[1]],
             'mean_magnitude': [mean_magnitude],
             'mean_path_length': [mean_path_length]
         }
@@ -162,11 +170,31 @@ def export_to_excel(batch_mode):
             xy = vec[:, :2]
             dxdy = vec[:, 2:]
             df_points = pd.read_csv(os.path.join(csv_dir, fname), header=None)
-            last_xy = df_points.iloc[[-1]].to_numpy()
+            datetimes = df_points.iloc[:, 2] if df_points.shape[1] > 2 else None
+            last_xy = df_points.iloc[[-1], :2].to_numpy()
             all_xy = np.vstack([xy, last_xy])
             all_dxdy = np.vstack([dxdy, [[np.nan, np.nan]]])
             df_vectors = pd.DataFrame(np.hstack([all_xy, all_dxdy]), columns=['x', 'y', 'dx', 'dy'])
-            df_vectors.insert(0, 'file', fname)
+
+            # Use datetimes and rep for the 'file' and 'rep' columns if available
+            if datetimes is not None:
+                dt_list = list(datetimes)
+                reps = df_points.iloc[:, 3] if df_points.shape[1] > 3 else None
+                rep_list = list(reps) if reps is not None else [np.nan] * len(dt_list)
+                # For Vectors DataFrame (length N)
+                expected_len = len(df_vectors)
+                dt_list_vectors = dt_list[:expected_len-1] + [np.nan]
+                rep_list_vectors = rep_list[:expected_len-1] + [np.nan]
+                df_vectors.insert(0, 'file', dt_list_vectors)
+                df_vectors.insert(1, 'rep', rep_list_vectors)
+                # For per-vector DataFrames (length N-1, start from rep 1)
+                perrow_file_col = dt_list[1:expected_len]
+                perrow_rep_col = rep_list[1:expected_len]
+            else:
+                df_vectors.insert(0, 'file', fname)
+                df_vectors.insert(1, 'rep', [np.nan] * len(df_vectors))
+                perrow_file_col = [fname] * len(vec)
+                perrow_rep_col = [np.nan] * len(vec)
 
             # Find corresponding stats
             mag = [m for f, m in average_magnitudes if f == fname][0]
@@ -177,13 +205,16 @@ def export_to_excel(batch_mode):
 
             # Find all magnitudes for this file
             all_mags = compute_magnitude(vec)
-            df_magnitudes = pd.DataFrame({'file': [fname]*len(all_mags), 'magnitude': all_mags})
-
-            df_angles = pd.DataFrame({'file': fname, 'angle': ang})
+            dt_list_short = perrow_file_col[:len(all_mags)]
+            rep_list_short = perrow_rep_col[:len(all_mags)]
+            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': all_mags})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': ang})
             df_resultant = pd.DataFrame([{'file': fname, 'resultant_x': res[0], 'resultant_y': res[1]}])
-            df_avg_mag = pd.DataFrame({'file': [fname], 'average_magnitude': [mag]})
-            df_path = pd.DataFrame({'file': [fname], 'total_path_length': [path]})
-            df_eucl = pd.DataFrame({'file': fname, 'euclidean_distance': eucl})
+            df_avg_mag = pd.DataFrame([{'file': fname, 'average_magnitude': mag}])
+            df_path = pd.DataFrame([{'file': fname, 'path_length': path}])
+            df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': eucl})
+            print(df_eucl['rep'])
+            print(df_angles['rep'])
 
             output_filename = f"{os.path.splitext(fname)[0]}_results.xlsx"
             with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
@@ -231,13 +262,16 @@ def export_to_excel(batch_mode):
         euclidean_distances = [euclidean_distance]
         path_lengths = [path_length]
 
+        # Get datetimes from the CSV
+        df_points = pd.read_csv(csv_path, header=None)
+        datetimes = df_points.iloc[:, 2] if df_points.shape[1] > 2 else None
+
         # Vectors: shape (N, 4)
         xy = vectors[0][1][:, :2]
         dxdy = vectors[0][1][:, 2:]
 
         # Get last x, y from original CSV
-        df_points = pd.read_csv(csv_path, header=None)
-        last_xy = df_points.iloc[[-1]].to_numpy()
+        last_xy = df_points.iloc[[-1], :2].to_numpy()
 
         # Stack x, y and dx, dy
         all_xy = np.vstack([xy, last_xy])
@@ -247,24 +281,64 @@ def export_to_excel(batch_mode):
             np.hstack([all_xy, all_dxdy]),
             columns=['x', 'y', 'dx', 'dy']
         )
-        df_vectors.insert(0, 'file', vectors[0][0])
-        # Magnitudes: shape (N,)
-        df_magnitudes = pd.DataFrame({'file': magnitudes[0][0], 'magnitude': magnitudes[0][1]})
-        # Angles: shape (N,)
-        df_angles = pd.DataFrame({'file': angles[0][0], 'angle': angles[0][1]})
+
+        if datetimes is not None:
+            dt_list = list(datetimes)
+            reps = df_points.iloc[:, 3] if df_points.shape[1] > 3 else None
+            rep_list = list(reps) if reps is not None else [np.nan] * len(dt_list)
+            expected_len = len(df_vectors)
+            # For Vectors DataFrame (length N)
+            dt_list_vectors = dt_list[:expected_len-1] + [np.nan]
+            rep_list_vectors = rep_list[:expected_len-1] + [np.nan]
+            df_vectors.insert(0, 'file', dt_list_vectors)
+            df_vectors.insert(1, 'rep', rep_list_vectors)
+            # For per-vector DataFrames (length N-1, start from rep 1)
+            perrow_file_col = dt_list[1:expected_len]
+            perrow_rep_col = rep_list[1:expected_len]
+            dt_list_short = perrow_file_col[:len(magnitudes[0][1])]
+            rep_list_short = perrow_rep_col[:len(magnitudes[0][1])]
+            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[0][1]})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[0][1]})
+            df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': euclidean_distance[1]})
+        else:
+            df_vectors.insert(0, 'file', vectors[0][0])
+            df_vectors.insert(1, 'rep', [np.nan] * len(df_vectors))
+            perrow_file_col = [vectors[0][0]] * len(vectors[0][1])
+            perrow_rep_col = [np.nan] * len(vectors[0][1])
+            dt_list_short = perrow_file_col[:len(magnitudes[0][1])]
+            rep_list_short = perrow_rep_col[:len(magnitudes[0][1])]
+            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[0][1]})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[0][1]})
+            df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': euclidean_distance[1]})
+
         # Resultant: shape (2,)
-        df_resultant = pd.DataFrame([{'file': resultant[0], 'resultant_x': resultant[1][0], 'resultant_y': resultant[1][1]}])
+        filename = os.path.basename(csv_path)
+        df_resultant = pd.DataFrame([{'file': filename, 'resultant_x': resultant[1][0], 'resultant_y': resultant[1][1]}])
         # Average magnitude: scalar
-        df_avg_mag = pd.DataFrame([{'file': average_magnitude[0], 'average_magnitude': average_magnitude[1]}])
-        # Euclidean distance: shape (N,)
-        df_eucl = pd.DataFrame({'file': euclidean_distance[0], 'euclidean_distance': euclidean_distance[1]})
+        df_avg_mag = pd.DataFrame([{'file': filename, 'average_magnitude': average_magnitude[1]}])
         # Path length: scalar
-        df_path = pd.DataFrame([{'file': path_length[0], 'path_length': path_length[1]}])
+        df_path = pd.DataFrame([{'file': filename, 'path_length': path_length[1]}])
 
-        # Example: Save to Excel with multiple sheets using pandas
-        output_filename = f"{os.path.splitext(os.path.basename(euclidean_distance[0]))[0]}_results.xlsx"
+        # Ensure 'rep' is numeric for all relevant DataFrames before writing to Excel
+        for df in [df_eucl, df_angles, df_magnitudes, df_vectors]:
+            if 'rep' in df.columns:
+                df['rep'] = pd.to_numeric(df['rep'], errors='coerce')
 
-        with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+        output_filename = f"{os.path.splitext(os.path.basename(csv_path))[0]}_results.xlsx"
+        '''
+        Code for generating plots should be placed here.
+        Code for writing plots to the Excel file will be added later after the DataFrames are written to Excel.
+        '''
+        df_eucl.set_index('rep')['euclidean_distance'].plot(title='Euclidean Distance vs Rep')
+        plt.show()
+
+        df_eucl.plot(x='rep', y='euclidean_distance', title='Euclidean Distance vs Rep')
+        plt.show()
+
+        df_eucl['euclidean_distance'].plot.kde()
+        plt.show()
+
+        with pd.ExcelWriter(output_filename, engine='xlsxwriter') as writer:
             df_resultant.to_excel(writer, sheet_name="Resultant", index=False, float_format="%.3f")
             df_avg_mag.to_excel(writer, sheet_name="AverageMagnitude", index=False, float_format="%.3f")
             df_eucl.to_excel(writer, sheet_name="EuclideanDistances", index=False, float_format="%.3f")
@@ -273,7 +347,7 @@ def export_to_excel(batch_mode):
             df_vectors.to_excel(writer, sheet_name="Vectors", index=False, float_format="%.3f")
             df_magnitudes.to_excel(writer, sheet_name="Magnitudes", index=False, float_format="%.3f")
 
-        # Auto-fit columns for all sheets
+        # Auto-fit columns for all sheets (do this AFTER closing the ExcelWriter)
         wb = openpyxl.load_workbook(output_filename)
         for ws in wb.worksheets:
             for col in ws.columns:
@@ -290,6 +364,51 @@ def export_to_excel(batch_mode):
         wb.save(output_filename)
 
         print("Single file results exported to", output_filename)
+
+                    
+        # Animation code
+        # After you have computed angles in single file mode:
+        # angles is a tuple: (file, angles_array)
+        angles_data = angles[0][1]  # This is your computed angles array (in degrees)
+        angles_rad = np.deg2rad(angles_data)
+
+        # Compute angular velocities (difference between consecutive angles)
+        angular_velocities = np.diff(angles_rad)
+        angular_velocities = np.append(angular_velocities, angular_velocities[-1])  # Pad to match length
+
+        # Interpolate for smooth animation
+        frames_per_step = 200  # More frames = smoother
+        interp_angles = []
+        for i in range(len(angles_rad) - 1):
+            interp = np.linspace(angles_rad[i], angles_rad[i+1], frames_per_step, endpoint=False)
+            interp_angles.extend(interp)
+        interp_angles.append(angles_rad[-1])  # Add last angle
+
+        # Set up the plot
+        fig, ax = plt.subplots(figsize=(5,5))
+        ax.set_aspect('equal')
+        circle = plt.Circle((0, 0), 1, fill=False, color='gray', linestyle='--')
+        ax.add_artist(circle)
+        point, = ax.plot([], [], 'ro', markersize=10)
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_ylim(-1.2, 1.2)
+
+        def update(frame):
+            x = np.cos(interp_angles[frame])
+            y = np.sin(interp_angles[frame])
+            point.set_data([x], [y])
+            return point,
+
+        ani = FuncAnimation(fig, update, frames=len(interp_angles), interval=30, blit=True)
+        plt.show()
+
+def colnum_string(n):
+    """Convert zero-based column index to Excel column letter."""
+    string_ = ""
+    while n >= 0:
+        string_ = chr(n % 26 + ord('A')) + string_
+        n = n // 26 - 1
+    return string_
 
 def main():
     app = ctk.CTk()
