@@ -19,6 +19,7 @@ import xlsxwriter
 import tkinter as tk
 from tkinter import filedialog
 import customtkinter as ctk
+
 data_dir = r"c:\Users\dbrimmer\Downloads\plant_dataset_split_v4"
 epochs = 10
 batch_size = 32

@@ -10,7 +10,9 @@ import threading
 from rgb_2_bin import RGB2BIN
 from extract_feature_points import TRACKMOTION
 from extract_vectors_from_csv import export_to_excel
-
+import sys
+sys.path.append(r'c:\Users\dbrimmer\Downloads\imaging-1')
+from Wilt_detection_Model import Plant_Wilt_detection_script
 
 class TextRedirector(object):
     def __init__(self, widget, tag="stdout"):
@@ -143,6 +145,29 @@ class App(ctk.CTk):
             except Exception as e:
                 print(f"Error in RGB2BIN processing: {e}")
                 return False
+        def batch_classify_images_in_folder():
+            if self.batch_trigger:
+                # Get all subdirectories
+                subdirs = [
+                    d.path for d in os.scandir(self.path_var.get()) 
+                    if d.is_dir() and not d.name.startswith('.')
+                ]
+                
+                if not subdirs:
+                    print("No valid subdirectories found for classification.")
+                    return False
+                
+                for subdir in natsorted(subdirs):
+                    print(f"Classifying images in: {os.path.basename(subdir)}")
+                    excel_path = os.path.join(subdir, "Health_results.xlsx")
+                    Plant_Wilt_detection_script.classify_images_in_folder(subdir, excel_path)
+                    
+                print("Classification completed for batch.")
+                
+            else:
+                    excel_path = os.path.join(self.path_var.get(), "Health_results.xlsx")
+                    Plant_Wilt_detection_script.classify_images_in_folder(self.path_var.get(),excel_path)
+                    print("Completed for folder: ", os.path.basename(self.path_var.get()))
 
         def track_motion():
             """Process images and track motion features."""
@@ -301,6 +326,8 @@ class App(ctk.CTk):
             if batch():
                 if track_motion():
                     export_to_excel_gui(self)
+                if batch_classify_images_in_folder():
+                    print("Batch classification completed.")
             print("Auto Run process finished.")
 
         # Threaded functions
