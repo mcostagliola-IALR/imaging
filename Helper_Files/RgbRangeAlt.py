@@ -13,7 +13,8 @@ image_files = sorted([
     if f.lower().endswith(('.jpg', '.jpeg', '.png'))
 ])
 folder_name = os.path.basename(folder)
-workbook = xlsxwriter.Workbook(folder_name + '.xlsx')
+output_path = os.path.join(folder, folder_name + '.xlsx')
+workbook = xlsxwriter.Workbook(output_path)
 worksheet = workbook.add_worksheet()
 
 worksheet.write(0, 0, "Filename")
