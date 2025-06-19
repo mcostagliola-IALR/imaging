@@ -4,24 +4,52 @@ import customtkinter as ctk
 import os
 from natsort import natsorted
 import openpyxl
+import matplotlib
+matplotlib.use('Agg')  # Use Agg backend for non-GUI environments
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-import string
+import io
+
+def calculate_path_length(points):
+    """
+    Calculate total path length from a sequence of points.
+    
+    Args:
+        points: numpy array of shape (n,2) containing x,y coordinates
+        
+    Returns:
+        float: Total path length
+    """
+    if points is None or len(points) < 2:
+        return 0.0
+        
+    points = np.array(points)
+    # Calculate differences between consecutive points
+    diffs = np.diff(points, axis=0)
+    # Sum up the Euclidean distances
+    return np.sum(np.sqrt(np.sum(diffs**2, axis=1)))
 
 def compute_vectors(csv_path):
-    df = pd.read_csv(csv_path, header=None)
-    # Use only the first two columns for x, y
-    points = df.iloc[:, :2].to_numpy()
-    datetimes = df.iloc[:, 2] if df.shape[1] > 2 else None
-    reps = df.iloc[:, 3] if df.shape[1] > 3 else None
-    vectors = []
-    for i in range(len(points) - 1):
-        x_i, y_i = points[i]
-        x_next, y_next = points[i + 1]
-        dx = x_next - x_i
-        dy = y_next - y_i
-        vectors.append([x_i, y_i, dx, dy])
-    return np.array(vectors), points, datetimes, reps
+    """Compute vectors from CSV file with x,y coordinates and timestamps."""
+    try:
+        # Read CSV with named columns
+        df = pd.read_csv(csv_path, header=None, 
+                         names=['x', 'y', 'datetime', 'rep'])
+        
+        # Convert coordinates to numeric, ensuring 2D array structure
+        coords = df[['x', 'y']].values
+        
+        # Calculate vectors between consecutive points
+        vectors = np.zeros((len(coords)-1, 4))  # [x1,y1,dx,dy]
+        for i in range(len(coords)-1):
+            vectors[i, 0:2] = coords[i]      # Starting point (x1,y1)
+            vectors[i, 2:4] = coords[i+1] - coords[i]  # Vector (dx,dy)
+            
+        return vectors, coords, df['datetime'].tolist(), df['rep'].tolist()
+        
+    except Exception as e:
+        print(f"Error reading {csv_path}: {e}")
+        return None, None, None, None
 
 def compute_resultant_vector(vectors):
     resultant_x = np.sum(vectors[:, 2])
@@ -57,32 +85,80 @@ def get_batch_mode():
     app.destroy()
     return batch_mode.get()
 
+
 def batch_process(csv_files):
+    """Process multiple CSV files maintaining exact variable names."""
     resultant_vectors = []
     average_magnitudes = []
     euclidean_distances = []
     path_lengths = []
+    # Initialize daily_path_lengths as a list to collect dictionaries from all files
+    all_daily_path_lengths = [] 
     angles = []
     vectors = []
 
     for csv_file in natsorted(csv_files):
-        vector, points, datetimes, reps = compute_vectors(csv_file)
-        euclidean_distance = np.linalg.norm(vector[:, 2:4], axis=1)
-        magnitudes = compute_magnitude(vector)
-        angle = compute_angle(vector)
-        resultant = compute_resultant_vector(vector)
-        file_name = os.path.basename(csv_file)
-        resultant_vectors.append((file_name, resultant))
-        average_magnitudes.append((file_name, np.mean(magnitudes)))
-        euclidean_distances.append((file_name, euclidean_distance))
-        path_length = np.sum(euclidean_distance)
-        path_lengths.append((file_name, path_length))
-        angles.append((file_name, angle))
-        vectors.append((file_name, vector))
+        try:
+            vector, points, datetimes, reps = compute_vectors(csv_file)
+            if vector is None or len(vector) == 0:
+                print(f"Skipping {csv_file}: No valid data")
+                continue
 
-    mean_resultant = np.mean([r[1] for r in resultant_vectors], axis=0)
-    mean_magnitude = np.mean([m[1] for m in average_magnitudes])
-    mean_path_length = np.mean([p[1] for p in path_lengths])
+            # Ensure vector is 2D array
+            vector = np.array(vector)
+            if vector.ndim == 1:
+                vector = vector.reshape(-1, 4)
+
+            # Calculate metrics
+            euclidean_distance = np.linalg.norm(vector[:, 2:4], axis=1)
+            magnitudes = compute_magnitude(vector)
+            angle = compute_angle(vector)
+            resultant = compute_resultant_vector(vector)
+            
+            # Store results with filename
+            file_name = os.path.basename(csv_file)
+            resultant_vectors.append((file_name, resultant))
+            average_magnitudes.append((file_name, np.mean(magnitudes)))
+            euclidean_distances.append((file_name, euclidean_distance))
+            path_length = np.sum(euclidean_distance)
+            path_lengths.append((file_name, path_length))
+            angles.append((file_name, angle))
+            vectors.append((file_name, vector))
+
+            # --- Daily Path Length Calculation for the current file ---
+            try:
+                datetime_series = pd.to_datetime(datetimes, errors='coerce')
+                dates = [dt.date() if pd.notnull(dt) else None for dt in datetime_series]
+                df_temp = pd.DataFrame({
+                    'x': points[:, 0],
+                    'y': points[:, 1],
+                    'date': dates
+                })
+                # Drop rows where date is NaT (if datetime conversion failed)
+                df_temp = df_temp.dropna(subset=['date'])
+
+                grouped = df_temp.groupby('date')
+
+                for date, group in grouped:
+                    coords = group[['x', 'y']].to_numpy()
+                    if len(coords) > 1:
+                        daily_len = calculate_path_length(coords)
+                        all_daily_path_lengths.append({'file': file_name, 'date': date.strftime('%Y-%m-%d'), 'daily_path_length': daily_len})
+            except Exception as e:
+                print(f"Skipping daily path length for {file_name} due to error: {e}")
+
+        except Exception as e:
+            print(f"Error processing {csv_file}: {e}")
+            continue
+
+    if not vectors:
+        print("No valid data processed")
+        return None, None, None, None, None, None, None, None, None, None # Added an extra None for daily_path_lengths
+
+    # Calculate means exactly as before
+    mean_resultant = np.mean([r[1] for r in resultant_vectors], axis=0) if resultant_vectors else np.array([np.nan, np.nan])
+    mean_magnitude = np.mean([m[1] for m in average_magnitudes]) if average_magnitudes else np.nan
+    mean_path_length = np.mean([p[1] for p in path_lengths]) if path_lengths else np.nan
 
     return (
         resultant_vectors,
@@ -93,21 +169,47 @@ def batch_process(csv_files):
         mean_path_length,
         angles,
         vectors,
-        path_lengths
-    )
+        path_lengths,
+        all_daily_path_lengths # Return the collected daily path lengths
+    )    
 
 def single_process(csv_path):
     if not csv_path:
         print("No file selected.")
         return
     vectors, points, datetimes, reps = compute_vectors(csv_path)
+    if vectors is None or len(vectors) == 0:
+        print(f"No valid data in {csv_path}")
+        return None
+
     magnitudes = compute_magnitude(vectors)
     angles = compute_angle(vectors)
     resultant = compute_resultant_vector(vectors)
     average_magnitude = np.mean(magnitudes)
     euclidean_distance = np.linalg.norm(vectors[:, 2:4], axis=1)
     path_length = np.sum(euclidean_distance)
-    file_name = datetimes
+    file_name = os.path.basename(csv_path) # Use basename for single file processing for consistency
+
+    daily_path_lengths = []
+    try:
+        datetime_series = pd.to_datetime(datetimes, errors='coerce')
+        dates = [dt.date() if pd.notnull(dt) else None for dt in datetime_series]
+        df_temp = pd.DataFrame({
+            'x': points[:, 0],
+            'y': points[:, 1],
+            'date': dates
+        })
+        df_temp = df_temp.dropna(subset=['date']) # Drop rows where date is NaT
+
+        grouped = df_temp.groupby('date')
+
+        for date, group in grouped:
+            coords = group[['x', 'y']].to_numpy()
+            if len(coords) > 1:
+                daily_len = calculate_path_length(coords)
+                daily_path_lengths.append({'file': file_name, 'date': date.strftime('%Y-%m-%d'), 'daily_path_length': daily_len})
+    except Exception as e:
+        print(f"Skipping daily path length for {file_name} due to error: {e}")
 
     return (
         (file_name, vectors),
@@ -116,12 +218,12 @@ def single_process(csv_path):
         (file_name, resultant),
         (file_name, average_magnitude),
         (file_name, euclidean_distance),
-        (file_name, path_length)
+        (file_name, path_length),
+        daily_path_lengths # Include daily_path_lengths here
     )
 
-def export_to_excel(batch_mode):
+def export_to_excel(batch_mode, csv_dir=None, csv_path=None):
     if batch_mode:
-        csv_dir = ctk.filedialog.askdirectory(title="Select Directory with CSV Files")
         if not csv_dir:
             print("No directory selected.")
             return
@@ -132,7 +234,12 @@ def export_to_excel(batch_mode):
             print("No CSV files found in directory.")
             return
         (resultant_vectors, average_magnitudes, mean_resultant, mean_magnitude,
-         euclidean_distances, mean_path_length, angles, vectors, path_lengths) = batch_process(csv_files=csv_files)
+         euclidean_distances, mean_path_length, angles, vectors, path_lengths, all_daily_path_lengths) = batch_process(csv_files=csv_files)
+
+        if vectors is None: # Handle case where batch_process returns None
+            print("No valid data to export in batch mode.")
+            return
+
         print("Exporting batch results to Excel...")
 
         # Batch summary file
@@ -144,9 +251,17 @@ def export_to_excel(batch_mode):
         }
         df_summary = pd.DataFrame(summary_data)
         df_path_lengths = pd.DataFrame(path_lengths, columns=['file', 'path_length'])
+        
+        # Create DataFrame for all daily path lengths
+        df_all_daily_paths = pd.DataFrame(all_daily_path_lengths)
+
 
         with pd.ExcelWriter("batch_summary.xlsx", engine='openpyxl') as writer:
             df_summary.to_excel(writer, sheet_name="Summary", index=False, float_format="%.3f")
+            df_path_lengths.to_excel(writer, sheet_name="AllPathLengths", index=False, float_format="%.3f")
+            if not df_all_daily_paths.empty:
+                df_all_daily_paths.to_excel(writer, sheet_name="AllDailyPathLengths", index=False, float_format="%.3f")
+
         print("Batch summary exported to batch_summary.xlsx")
 
         wb = openpyxl.load_workbook(output_filename_summary := "batch_summary.xlsx")
@@ -200,24 +315,97 @@ def export_to_excel(batch_mode):
             mag = [m for f, m in average_magnitudes if f == fname][0]
             ang = [a for f, a in angles if f == fname][0]
             res = [r for f, r in resultant_vectors if f == fname][0]
-            eucl = [e for f, e in euclidean_distances if f == fname][0]
+            eucl_data = [e for f, e in euclidean_distances if f == fname][0] # Get the numpy array of euclidean distances
             path = [p for f, p in path_lengths if f == fname][0]
+            
+            # Filter daily path lengths for the current file
+            daily_paths_for_file = [d for d in all_daily_path_lengths if d['file'] == fname]
+            df_daily_paths = pd.DataFrame(daily_paths_for_file)
 
+            # Ensure df_eucl and df_angles are always defined
+            # Even if empty, so plotting attempts don't fail due to undefined variables
+            dt_list_short = perrow_file_col[:len(eucl_data)] # Use eucl_data length for consistency
+            rep_list_short = perrow_rep_col[:len(eucl_data)]
+            
+            df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': eucl_data})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': ang}) # 'ang' is already a numpy array of angles
+            
             # Find all magnitudes for this file
             all_mags = compute_magnitude(vec)
-            dt_list_short = perrow_file_col[:len(all_mags)]
-            rep_list_short = perrow_rep_col[:len(all_mags)]
             df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': all_mags})
-            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': ang})
             df_resultant = pd.DataFrame([{'file': fname, 'resultant_x': res[0], 'resultant_y': res[1]}])
             df_avg_mag = pd.DataFrame([{'file': fname, 'average_magnitude': mag}])
             df_path = pd.DataFrame([{'file': fname, 'path_length': path}])
-            df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': eucl})
-            print(df_eucl['rep'])
-            print(df_angles['rep'])
+
+
+            # --- Plotting and image embedding for batch mode ---
+
+            # Euclidean Distance KDE
+            if len(df_eucl['euclidean_distance'].dropna()) > 1: # Check if there's enough data for KDE
+                ax_kde = df_eucl['euclidean_distance'].plot.kde()
+                ax_kde.set_xlabel("Euclidean Distance")
+                ax_kde.set_ylabel("Density")
+                fig_kde = ax_kde.get_figure()
+                img_data = io.BytesIO()
+                fig_kde.savefig(img_data, format='png')
+                plt.close(fig_kde)
+                img_data.seek(0)
+            else:
+                img_data = None  # Or handle as needed
+
+            # Euclidean Distance Histogram
+            if not df_eucl['euclidean_distance'].empty: # Check if there's any data for histogram
+                hist_img_data = io.BytesIO()
+                # Use a try-except block for plotting as hist can also fail with single unique value
+                try:
+                    ax_hist = df_eucl['euclidean_distance'].plot.hist(bins=50, alpha=0.5)
+                except Exception as e:
+                    print(f"Warning: Could not plot Euclidean Distance histogram for {fname}: {e}")
+                    ax_hist = plt.figure().add_subplot(111) # Create an empty subplot
+                    ax_hist.text(0.5, 0.5, 'No valid data for histogram', horizontalalignment='center', verticalalignment='center', transform=ax_hist.transAxes)
+                ax_hist.set_xlabel("Euclidean Distance")
+                ax_hist.set_ylabel("Frequency")
+                fig_hist = ax_hist.get_figure()
+                fig_hist.savefig(hist_img_data, format='png')
+                plt.close(fig_hist)
+                hist_img_data.seek(0)
+            else:
+                hist_img_data = None
+
+            # Angles KDE
+            if len(df_angles['angle'].dropna()) > 1: # Check if there's enough data for KDE
+                kde_angle_img_data = io.BytesIO()
+                ax_kde_angle = df_angles['angle'].plot.kde()
+                ax_kde_angle.set_xlabel("Angle (degrees)")
+                ax_kde_angle.set_ylabel("Density")
+                fig_kde_angle = ax_kde_angle.get_figure()
+                fig_kde_angle.savefig(kde_angle_img_data, format='png')
+                plt.close(fig_kde_angle)
+                kde_angle_img_data.seek(0)
+            else:
+                kde_angle_img_data = None
+
+            # Angles Histogram
+            if not df_angles['angle'].empty: # Check if there's any data for histogram
+                hist_angle_img_data = io.BytesIO()
+                try:
+                    ax_hist_angle = df_angles['angle'].plot.hist(bins=50, alpha=0.5)
+                except Exception as e:
+                    print(f"Warning: Could not plot Angle histogram for {fname}: {e}")
+                    ax_hist_angle = plt.figure().add_subplot(111) # Create an empty subplot
+                    ax_hist_angle.text(0.5, 0.5, 'No valid data for histogram', horizontalalignment='center', verticalalignment='center', transform=ax_hist_angle.transAxes)
+                ax_hist_angle.set_xlabel("Angle (degrees)")
+                ax_hist_angle.set_ylabel("Frequency")
+                fig_hist_angle = ax_hist_angle.get_figure()
+                fig_hist_angle.savefig(hist_angle_img_data, format='png')
+                plt.close(fig_hist_angle)
+                hist_angle_img_data.seek(0)
+            else:
+                hist_angle_img_data = None
+
 
             output_filename = f"{os.path.splitext(fname)[0]}_results.xlsx"
-            with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+            with pd.ExcelWriter(output_filename, engine='xlsxwriter') as writer:
                 df_resultant.to_excel(writer, sheet_name="Resultant", index=False, float_format="%.3f")
                 df_avg_mag.to_excel(writer, sheet_name="AverageMagnitude", index=False, float_format="%.3f")
                 df_eucl.to_excel(writer, sheet_name="EuclideanDistances", index=False, float_format="%.3f")
@@ -225,8 +413,23 @@ def export_to_excel(batch_mode):
                 df_vectors.to_excel(writer, sheet_name="Vectors", index=False, float_format="%.3f")
                 df_magnitudes.to_excel(writer, sheet_name="Magnitudes", index=False, float_format="%.3f")
                 df_path.to_excel(writer, sheet_name="PathLengths", index=False, float_format="%.3f")
+                if not df_daily_paths.empty:
+                    df_daily_paths.to_excel(writer, sheet_name="PathLengthsDaily", index=False, float_format="%.3f")
 
-            # Auto-fit columns for all sheets
+                workbook = writer.book
+                worksheet = writer.sheets['EuclideanDistances']
+                worksheet_angles = writer.sheets['Angles']
+
+                if img_data is not None:
+                    worksheet.insert_image('F5', 'eucl_kde.png', {'image_data': img_data})
+                if hist_img_data is not None:
+                    worksheet.insert_image('F30', 'eucl_hist.png', {'image_data': hist_img_data})
+                if kde_angle_img_data is not None:
+                    worksheet_angles.insert_image('F2', 'angle_kde.png', {'image_data': kde_angle_img_data})
+                if hist_angle_img_data is not None:
+                    worksheet_angles.insert_image('F30', 'angle_hist.png', {'image_data': hist_angle_img_data})
+
+            # Auto-fit columns for all sheets (do this AFTER closing the ExcelWriter)
             wb = openpyxl.load_workbook(output_filename)
             for ws in wb.worksheets:
                 for col in ws.columns:
@@ -243,32 +446,28 @@ def export_to_excel(batch_mode):
             wb.save(output_filename)
             print(f"Exported {output_filename}")
 
-    else:
-        csv_path = ctk.filedialog.askopenfilename(title="Select CSV File", filetypes=[("CSV Files", "*.csv")])
-        os.chdir(os.path.dirname(csv_path))
+    else: # Single file mode
         if not csv_path:
             print("No file selected.")
             return
+        os.chdir(os.path.dirname(csv_path))
         single_results = single_process(csv_path=csv_path)
         if single_results is None:
             print("No results to export.")
             return
-        vectors, magnitudes, angles, resultant, average_magnitude, euclidean_distance, path_length = single_results
-        vectors = [vectors]
-        magnitudes = [magnitudes]
-        angles = [angles]
-        resultant_vectors = [resultant]
-        average_magnitudes = [average_magnitude]
-        euclidean_distances = [euclidean_distance]
-        path_lengths = [path_length]
+        vectors, magnitudes, angles, resultant, average_magnitude, euclidean_distance, path_length, daily_path_lengths_single = single_results
+        
+        # Unpack the tuple results (already done by the assignment)
+        # For single process, these are already direct values, not lists of tuples
+        # Need to ensure they are formatted as expected by the DataFrame constructors
+        
+        # Vectors: shape (N, 4)
+        xy = vectors[1][:, :2]
+        dxdy = vectors[1][:, 2:]
 
         # Get datetimes from the CSV
         df_points = pd.read_csv(csv_path, header=None)
         datetimes = df_points.iloc[:, 2] if df_points.shape[1] > 2 else None
-
-        # Vectors: shape (N, 4)
-        xy = vectors[0][1][:, :2]
-        dxdy = vectors[0][1][:, 2:]
 
         # Get last x, y from original CSV
         last_xy = df_points.iloc[[-1], :2].to_numpy()
@@ -295,20 +494,20 @@ def export_to_excel(batch_mode):
             # For per-vector DataFrames (length N-1, start from rep 1)
             perrow_file_col = dt_list[1:expected_len]
             perrow_rep_col = rep_list[1:expected_len]
-            dt_list_short = perrow_file_col[:len(magnitudes[0][1])]
-            rep_list_short = perrow_rep_col[:len(magnitudes[0][1])]
-            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[0][1]})
-            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[0][1]})
+            dt_list_short = perrow_file_col[:len(magnitudes[1])]
+            rep_list_short = perrow_rep_col[:len(magnitudes[1])]
+            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[1]})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[1]})
             df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': euclidean_distance[1]})
         else:
-            df_vectors.insert(0, 'file', vectors[0][0])
+            df_vectors.insert(0, 'file', vectors[0])
             df_vectors.insert(1, 'rep', [np.nan] * len(df_vectors))
-            perrow_file_col = [vectors[0][0]] * len(vectors[0][1])
-            perrow_rep_col = [np.nan] * len(vectors[0][1])
-            dt_list_short = perrow_file_col[:len(magnitudes[0][1])]
-            rep_list_short = perrow_rep_col[:len(magnitudes[0][1])]
-            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[0][1]})
-            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[0][1]})
+            perrow_file_col = [vectors[0]] * len(vectors[1])
+            perrow_rep_col = [np.nan] * len(vectors[1])
+            dt_list_short = perrow_file_col[:len(magnitudes[1])]
+            rep_list_short = perrow_rep_col[:len(magnitudes[1])]
+            df_magnitudes = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'magnitude': magnitudes[1]})
+            df_angles = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'angle': angles[1]})
             df_eucl = pd.DataFrame({'file': dt_list_short, 'rep': rep_list_short, 'euclidean_distance': euclidean_distance[1]})
 
         # Resultant: shape (2,)
@@ -318,6 +517,8 @@ def export_to_excel(batch_mode):
         df_avg_mag = pd.DataFrame([{'file': filename, 'average_magnitude': average_magnitude[1]}])
         # Path length: scalar
         df_path = pd.DataFrame([{'file': filename, 'path_length': path_length[1]}])
+        # Daily path lengths
+        df_daily_paths = pd.DataFrame(daily_path_lengths_single)
 
         # Ensure 'rep' is numeric for all relevant DataFrames before writing to Excel
         for df in [df_eucl, df_angles, df_magnitudes, df_vectors]:
@@ -325,27 +526,92 @@ def export_to_excel(batch_mode):
                 df['rep'] = pd.to_numeric(df['rep'], errors='coerce')
 
         output_filename = f"{os.path.splitext(os.path.basename(csv_path))[0]}_results.xlsx"
-        '''
-        Code for generating plots should be placed here.
-        Code for writing plots to the Excel file will be added later after the DataFrames are written to Excel.
-        '''
-        df_eucl.set_index('rep')['euclidean_distance'].plot(title='Euclidean Distance vs Rep')
-        plt.show()
 
-        df_eucl.plot(x='rep', y='euclidean_distance', title='Euclidean Distance vs Rep')
-        plt.show()
+       # Euclidean Distance KDE
+        if len(df_eucl['euclidean_distance'].dropna()) > 1:
+            ax_kde = df_eucl['euclidean_distance'].plot.kde()
+            ax_kde.set_xlabel("Euclidean Distance")
+            ax_kde.set_ylabel("Density")
+            fig_kde = ax_kde.get_figure()
+            img_data = io.BytesIO()
+            fig_kde.savefig(img_data, format='png')
+            plt.close(fig_kde)
+            img_data.seek(0)
+        else:
+            img_data = None  # Or handle as needed
 
-        df_eucl['euclidean_distance'].plot.kde()
-        plt.show()
+        # Euclidean Distance Histogram
+        if not df_eucl['euclidean_distance'].empty:
+            hist_img_data = io.BytesIO()
+            try: # Added try-except for plotting
+                ax_hist = df_eucl['euclidean_distance'].plot.hist(bins=50, alpha=0.5)
+            except Exception as e:
+                print(f"Warning: Could not plot Euclidean Distance histogram for {filename}: {e}")
+                ax_hist = plt.figure().add_subplot(111)
+                ax_hist.text(0.5, 0.5, 'No valid data for histogram', horizontalalignment='center', verticalalignment='center', transform=ax_hist.transAxes)
+            ax_hist.set_xlabel("Euclidean Distance")
+            ax_hist.set_ylabel("Frequency")
+            fig_hist = ax_hist.get_figure()
+            fig_hist.savefig(hist_img_data, format='png')
+            plt.close(fig_hist)
+            hist_img_data.seek(0)
+        else:
+            hist_img_data = None
+
+        # Angles KDE
+        if len(df_angles['angle'].dropna()) > 1:
+            kde_angle_img_data = io.BytesIO()
+            ax_kde_angle = df_angles['angle'].plot.kde()
+            ax_kde_angle.set_xlabel("Angle (degrees)")
+            ax_kde_angle.set_ylabel("Density")
+            fig_kde_angle = ax_kde_angle.get_figure()
+            fig_kde_angle.savefig(kde_angle_img_data, format='png')
+            plt.close(fig_kde_angle)
+            kde_angle_img_data.seek(0)
+        else:
+            kde_angle_img_data = None
+
+        # Angles Histogram
+        if not df_angles['angle'].empty:
+            hist_angle_img_data = io.BytesIO()
+            try: # Added try-except for plotting
+                ax_hist_angle = df_angles['angle'].plot.hist(bins=50, alpha=0.5)
+            except Exception as e:
+                print(f"Warning: Could not plot Angle histogram for {filename}: {e}")
+                ax_hist_angle = plt.figure().add_subplot(111)
+                ax_hist_angle.text(0.5, 0.5, 'No valid data for histogram', horizontalalignment='center', verticalalignment='center', transform=ax_hist_angle.transAxes)
+            ax_hist_angle.set_xlabel("Angle (degrees)")
+            ax_hist_angle.set_ylabel("Frequency")
+            fig_hist_angle = ax_hist_angle.get_figure()
+            fig_hist_angle.savefig(hist_angle_img_data, format='png')
+            plt.close(fig_hist_angle)
+            hist_angle_img_data.seek(0)
+        else:
+            hist_angle_img_data = None
 
         with pd.ExcelWriter(output_filename, engine='xlsxwriter') as writer:
             df_resultant.to_excel(writer, sheet_name="Resultant", index=False, float_format="%.3f")
             df_avg_mag.to_excel(writer, sheet_name="AverageMagnitude", index=False, float_format="%.3f")
             df_eucl.to_excel(writer, sheet_name="EuclideanDistances", index=False, float_format="%.3f")
-            df_path.to_excel(writer, sheet_name="PathLengths", index=False, float_format="%.3f")
             df_angles.to_excel(writer, sheet_name="Angles", index=False, float_format="%.3f")
             df_vectors.to_excel(writer, sheet_name="Vectors", index=False, float_format="%.3f")
             df_magnitudes.to_excel(writer, sheet_name="Magnitudes", index=False, float_format="%.3f")
+            df_path.to_excel(writer, sheet_name="PathLengths", index=False, float_format="%.3f")
+            if not df_daily_paths.empty: # Only export if there's daily data
+                df_daily_paths.to_excel(writer, sheet_name="PathLengthsDaily", index=False, float_format="%.3f")
+
+            workbook = writer.book
+            worksheet = writer.sheets['EuclideanDistances']
+            worksheet_angles = writer.sheets['Angles']
+
+            if img_data is not None:
+                worksheet.insert_image('F5', 'eucl_kde.png', {'image_data': img_data})
+            if hist_img_data is not None:
+                worksheet.insert_image('F30', 'eucl_hist.png', {'image_data': hist_img_data})
+            if kde_angle_img_data is not None:
+                worksheet_angles.insert_image('F2', 'angle_kde.png', {'image_data': kde_angle_img_data})
+            if hist_angle_img_data is not None:
+                worksheet_angles.insert_image('F30', 'angle_hist.png', {'image_data': hist_angle_img_data})
 
         # Auto-fit columns for all sheets (do this AFTER closing the ExcelWriter)
         wb = openpyxl.load_workbook(output_filename)
@@ -365,43 +631,6 @@ def export_to_excel(batch_mode):
 
         print("Single file results exported to", output_filename)
 
-                    
-        # Animation code
-        # After you have computed angles in single file mode:
-        # angles is a tuple: (file, angles_array)
-        angles_data = angles[0][1]  # This is your computed angles array (in degrees)
-        angles_rad = np.deg2rad(angles_data)
-
-        # Compute angular velocities (difference between consecutive angles)
-        angular_velocities = np.diff(angles_rad)
-        angular_velocities = np.append(angular_velocities, angular_velocities[-1])  # Pad to match length
-
-        # Interpolate for smooth animation
-        frames_per_step = 200  # More frames = smoother
-        interp_angles = []
-        for i in range(len(angles_rad) - 1):
-            interp = np.linspace(angles_rad[i], angles_rad[i+1], frames_per_step, endpoint=False)
-            interp_angles.extend(interp)
-        interp_angles.append(angles_rad[-1])  # Add last angle
-
-        # Set up the plot
-        fig, ax = plt.subplots(figsize=(5,5))
-        ax.set_aspect('equal')
-        circle = plt.Circle((0, 0), 1, fill=False, color='gray', linestyle='--')
-        ax.add_artist(circle)
-        point, = ax.plot([], [], 'ro', markersize=10)
-        ax.set_xlim(-1.2, 1.2)
-        ax.set_ylim(-1.2, 1.2)
-
-        def update(frame):
-            x = np.cos(interp_angles[frame])
-            y = np.sin(interp_angles[frame])
-            point.set_data([x], [y])
-            return point,
-
-        ani = FuncAnimation(fig, update, frames=len(interp_angles), interval=30, blit=True)
-        plt.show()
-
 def colnum_string(n):
     """Convert zero-based column index to Excel column letter."""
     string_ = ""
@@ -410,41 +639,5 @@ def colnum_string(n):
         n = n // 26 - 1
     return string_
 
-def main():
-    app = ctk.CTk()
-    app.title("Vector Extraction")
-
-    batch_mode = ctk.BooleanVar(value=False)
-
-    def on_toggle():
-        batch_mode.set(not batch_mode.get())
-        toggle_btn.configure(text=f"Batch Mode: {'ON' if batch_mode.get() else 'OFF'}")
-
-    toggle_btn = ctk.CTkButton(app, text="Batch Mode: OFF", command=on_toggle)
-    toggle_btn.pack(pady=10)
-
-    def on_process():
-        export_to_excel(batch_mode.get())
-
-    process_btn = ctk.CTkButton(app, text="Process", command=on_process)
-    process_btn.pack(pady=10)
-
-    def delete_xlsx_files():
-        cwd = ctk.filedialog.askdirectory(title="Select Directory to Delete XLSX Files")
-        deleted = 0
-        for f in os.listdir(cwd):
-            if f.endswith('.xlsx'):
-                try:
-                    os.remove(os.path.join(cwd, f))
-                    deleted += 1
-                except Exception as e:
-                    print(f"Could not delete {f}: {e}")
-        print(f"Deleted {deleted} .xlsx files from {cwd}")
-
-    delete_btn = ctk.CTkButton(app, text="Delete All XLSX Files", command=delete_xlsx_files)
-    delete_btn.pack(pady=10)
-
-    app.mainloop()
-
 if __name__ == "__main__":
-    main()
+    pass
