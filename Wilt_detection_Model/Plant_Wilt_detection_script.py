@@ -1,4 +1,5 @@
-#This is just the script version of notebook of the same name.
+#This is just the python version of the notebook of the same name.
+#For documentation on the code, go to the notebook version of this script.
 import torch
 from torchvision import transforms, datasets, models
 from torch.utils.data import DataLoader
