@@ -79,7 +79,7 @@ model.fc = torch.nn.Linear(num_ftrs, len(train_data.classes))
 model = model.to(device)
 
 #The current model you want to use, change if you made another model.
-model_path=r"C:\Users\dbrimmer\Downloads\imaging\Wilt_detection_Model\Plant-Wilting-Model_v4.pth"
+model_path=r"Plant-Wilting-Model_v4.pth"
 
 if os.path.exists(model_path):
     model.load_state_dict(torch.load(model_path, map_location=device))
