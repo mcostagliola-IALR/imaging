@@ -143,6 +143,7 @@ class App(ctk.CTk):
             except Exception as e:
                 print(f"Error in RGB2BIN processing: {e}")
                 return False
+        #Extended capabilities of classify_images_in_folder to handle batch processing
         def batch_classify_images_in_folder():
             if self.batch_trigger:
                 # Get all subdirectories
@@ -315,7 +316,12 @@ class App(ctk.CTk):
                     print(f"Export failed: {e}")
                     self.export_complete = False
                     return False
-                
+        
+        #################################################
+        #################################################
+        ##This is where Everthing happens(For debugging)#
+        #################################################  
+        #################################################     
         def processing():
             # This is your chained process for the "Auto Run Program" button
             # You might want to add some visual feedback (e.g., disable buttons, show progress)
