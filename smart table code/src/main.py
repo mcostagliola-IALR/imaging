@@ -12,8 +12,7 @@ from extract_feature_points import TRACKMOTION
 from extract_vectors_from_csv import export_to_excel
 import sys
 #Change the path to your imaging directory
-sys.path.append(r'c:\Users\dbrimmer\Downloads\imaging')
-from Wilt_detection_Model import Plant_Wilt_detection_script
+from Plant_Wilt_detection_script import classify_images_in_folder
 
 class TextRedirector(object):
     def __init__(self, widget, tag="stdout"):
@@ -161,13 +160,13 @@ class App(ctk.CTk):
                 for subdir in natsorted(subdirs):
                     print(f"Classifying images in: {os.path.basename(subdir)}")
                     excel_path = os.path.join(subdir, "Health_results.xlsx")
-                    Plant_Wilt_detection_script.classify_images_in_folder(subdir, excel_path)
+                    classify_images_in_folder(subdir, excel_path)
                     
                 print("Classification completed for batch.")
                 
             else:
                     excel_path = os.path.join(self.path_var.get(), "Health_results.xlsx")
-                    Plant_Wilt_detection_script.classify_images_in_folder(self.path_var.get(),excel_path)
+                    classify_images_in_folder(self.path_var.get(),excel_path)
                     print("Completed for folder: ", os.path.basename(self.path_var.get()))
 
         def track_motion():
