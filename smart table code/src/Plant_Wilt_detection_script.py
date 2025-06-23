@@ -79,8 +79,10 @@ model.fc = torch.nn.Linear(num_ftrs, len(train_data.classes))
 model = model.to(device)
 
 #The current model you want to use, change if you made another model.
-model_path=r"Plant-Wilting-Model_v4.pth"
-
+#model_path=r"Plant-Wilting-Model_v4.pth"
+script_dir = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(script_dir, "Plant-Wilting-Model_v4.pth")
+print("Looking for model at:", os.path.abspath(model_path))
 if os.path.exists(model_path):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
