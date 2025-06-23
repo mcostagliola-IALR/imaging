@@ -10,8 +10,6 @@ import threading
 from rgb_2_bin import RGB2BIN
 from extract_feature_points import TRACKMOTION
 from extract_vectors_from_csv import export_to_excel
-import sys
-#Change the path to your imaging directory
 from Plant_Wilt_detection_script import classify_images_in_folder
 
 class TextRedirector(object):
